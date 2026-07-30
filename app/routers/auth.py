@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Response, Request, Query
+from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 from datetime import datetime, timedelta
 import secrets
@@ -78,7 +79,7 @@ def get_refresh_token_from_cookie(request: Request) -> str:
 # ============================================
 
 @router.post("/signup", response_model=SignupResponse, status_code=status.HTTP_201_CREATED)
-@limiter.limit("3 per hour")
+@limiter.limit("10 per hour")
 async def signup(
     request: Request,
     signup_data: SignupRequest,
@@ -203,11 +204,7 @@ async def forgot_password(
     request_data: ForgotPasswordRequest,
     db: Session = Depends(get_db)
 ):
-    """
-    Initiate password reset.
-    Sends reset email if account exists.
-    Always returns success (security: don't reveal if email exists).
-    """
+    """Initiate password reset"""
     
     user = db.query(User).filter(User.email == request_data.email).first()
     
@@ -306,7 +303,7 @@ async def verify_reset_token_endpoint(
     token: str,
     db: Session = Depends(get_db)
 ):
-    """Check if reset token is valid (used by frontend before showing reset form)"""
+    """Check if reset token is valid"""
     
     payload = verify_reset_token(token)
     
@@ -344,7 +341,7 @@ async def verify_reset_token_endpoint(
 
 
 # ============================================
-# GOOGLE OAUTH
+# GOOGLE OAUTH - LOGIN URL
 # ============================================
 
 @router.get("/google/login", response_model=OAuthAuthURLResponse)
@@ -378,6 +375,77 @@ async def google_login_redirect(
         )
 
 
+# ============================================
+# GOOGLE OAUTH - GET CALLBACK (called by Google)
+# ============================================
+
+@router.get("/google/callback")
+async def google_callback_get(
+    request: Request,
+    code: str,
+    db: Session = Depends(get_db)
+):
+    """Handle Google OAuth callback (called by Google via GET)"""
+    
+    try:
+        print(f"🔵 Google callback received with code: {code[:20]}...")
+        
+        user_info = await google_oauth.get_user_info(
+            code=code,
+            redirect_uri=f"{settings.FRONTEND_URL}/auth/google/callback"
+        )
+        
+        email = user_info.get("email")
+        full_name = user_info.get("name", "")
+        avatar_url = user_info.get("picture")
+        email_verified = user_info.get("email_verified", False)
+        
+        if not email:
+            return RedirectResponse(
+                url=f"{settings.FRONTEND_URL}/login?error=email_not_provided"
+            )
+        
+        user = db.query(User).filter(User.email == email).first()
+        
+        if not user:
+            user = User(
+                email=email,
+                password_hash=None,
+                full_name=full_name or email.split("@")[0],
+                avatar_url=avatar_url,
+                email_verified=email_verified,
+                plan_type='free',
+                is_active=True,
+            )
+            db.add(user)
+            db.commit()
+            db.refresh(user)
+        else:
+            if not user.avatar_url and avatar_url:
+                user.avatar_url = avatar_url
+            if not user.email_verified and email_verified:
+                user.email_verified = email_verified
+            db.commit()
+        
+        access_token = create_access_token({"sub": user.email, "user_id": user.id})
+        refresh_token = create_refresh_token({"sub": user.email, "user_id": user.id})
+        
+        # Redirect to frontend with token
+        return RedirectResponse(
+            url=f"{settings.FRONTEND_URL}/auth/callback?token={access_token}&provider=google"
+        )
+    
+    except Exception as e:
+        print(f"❌ Google OAuth error: {e}")
+        return RedirectResponse(
+            url=f"{settings.FRONTEND_URL}/login?error=oauth_failed"
+        )
+
+
+# ============================================
+# GOOGLE OAUTH - POST CALLBACK (called by frontend)
+# ============================================
+
 @router.post("/google/callback", response_model=LoginResponse)
 @limiter.limit("20 per hour")
 async def google_callback(
@@ -386,7 +454,7 @@ async def google_callback(
     response: Response,
     db: Session = Depends(get_db)
 ):
-    """Handle Google OAuth callback"""
+    """Handle Google OAuth callback from frontend POST"""
     
     try:
         user_info = await google_oauth.get_user_info(
@@ -474,7 +542,7 @@ async def google_callback(
 
 
 # ============================================
-# GITHUB OAUTH
+# GITHUB OAUTH - LOGIN URL
 # ============================================
 
 @router.get("/github/login", response_model=OAuthAuthURLResponse)
@@ -487,7 +555,7 @@ async def github_login_redirect(
     
     try:
         if not redirect_uri:
-            redirect_uri = f"{settings.FRONTEND_URL}/auth/github/callback"
+            redirect_uri = "http://localhost:8000/api/auth/github/callback"
         
         state = secrets.token_urlsafe(32)
         auth_url = github_oauth.get_authorize_url(
@@ -508,6 +576,75 @@ async def github_login_redirect(
         )
 
 
+# ============================================
+# GITHUB OAUTH - GET CALLBACK (called by GitHub)
+# ============================================
+
+@router.get("/github/callback")
+async def github_callback_get(
+    request: Request,
+    code: str,
+    db: Session = Depends(get_db)
+):
+    """Handle GitHub OAuth callback (called by GitHub via GET)"""
+    
+    try:
+        print(f"🔵 GitHub callback received with code: {code[:20]}...")
+        print("=" * 50)
+        print(f"🔵 GitHub callback received!")
+        print(f"📌 Code: {code[:20]}...")
+        print(f"📌 FRONTEND_URL: {settings.FRONTEND_URL}")
+        print("=" * 50)
+        
+        user_info = await github_oauth.get_user_info(
+            code=code,
+            redirect_uri=f"{settings.FRONTEND_URL}/auth/github/callback"
+        )
+        
+        email = user_info.get("email")
+        full_name = user_info.get("name", "")
+        avatar_url = user_info.get("picture")
+        
+        if not email:
+            return RedirectResponse(
+                url=f"{settings.FRONTEND_URL}/login?error=email_not_provided"
+            )
+        
+        user = db.query(User).filter(User.email == email).first()
+        
+        if not user:
+            user = User(
+                email=email,
+                password_hash=None,
+                full_name=full_name or email.split("@")[0],
+                avatar_url=avatar_url,
+                email_verified=True,
+                plan_type='free',
+                is_active=True,
+            )
+            db.add(user)
+            db.commit()
+            db.refresh(user)
+        
+        access_token = create_access_token({"sub": user.email, "user_id": user.id})
+        refresh_token = create_refresh_token({"sub": user.email, "user_id": user.id})
+        
+        # Redirect to frontend with token
+        return RedirectResponse(
+            url=f"{settings.FRONTEND_URL}/auth/callback?token={access_token}&provider=github"
+        )
+    
+    except Exception as e:
+        print(f"❌ GitHub OAuth error: {e}")
+        return RedirectResponse(
+            url=f"{settings.FRONTEND_URL}/login?error=oauth_failed"
+        )
+
+
+# ============================================
+# GITHUB OAUTH - POST CALLBACK (called by frontend)
+# ============================================
+
 @router.post("/github/callback", response_model=LoginResponse)
 @limiter.limit("20 per hour")
 async def github_callback(
@@ -516,7 +653,7 @@ async def github_callback(
     response: Response,
     db: Session = Depends(get_db)
 ):
-    """Handle GitHub OAuth callback"""
+    """Handle GitHub OAuth callback from frontend POST"""
     
     try:
         user_info = await github_oauth.get_user_info(
