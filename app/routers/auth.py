@@ -353,8 +353,11 @@ async def google_login_redirect(
     """Get Google OAuth authorization URL"""
     
     try:
+        # ✅ USE BACKEND URL - MUST MATCH Google Console EXACTLY
         if not redirect_uri:
-            redirect_uri = f"{settings.FRONTEND_URL}/auth/google/callback"
+            redirect_uri = "http://localhost:8000/api/auth/google/callback"
+        
+        print(f"🔗 [GOOGLE LOGIN] Using redirect_uri: {redirect_uri}")
         
         state = secrets.token_urlsafe(32)
         auth_url = google_oauth.get_authorize_url(
@@ -388,11 +391,15 @@ async def google_callback_get(
     """Handle Google OAuth callback (called by Google via GET)"""
     
     try:
-        print(f"🔵 Google callback received with code: {code[:20]}...")
+        print("=" * 60)
+        print(f"🔵 [GOOGLE CALLBACK] Received!")
+        print(f"📌 Code: {code[:20]}...")
+        print("=" * 60)
         
+        # ✅ MUST MATCH redirect_uri from /google/login
         user_info = await google_oauth.get_user_info(
             code=code,
-            redirect_uri=f"{settings.FRONTEND_URL}/auth/google/callback"
+            redirect_uri="http://localhost:8000/api/auth/google/callback"
         )
         
         email = user_info.get("email")
@@ -401,13 +408,17 @@ async def google_callback_get(
         email_verified = user_info.get("email_verified", False)
         
         if not email:
+            print("❌ No email from Google")
             return RedirectResponse(
                 url=f"{settings.FRONTEND_URL}/login?error=email_not_provided"
             )
         
+        print(f"📌 Got email: {email}")
+        
         user = db.query(User).filter(User.email == email).first()
         
         if not user:
+            print(f"📌 Creating new user: {email}")
             user = User(
                 email=email,
                 password_hash=None,
@@ -421,6 +432,7 @@ async def google_callback_get(
             db.commit()
             db.refresh(user)
         else:
+            print(f"📌 Found existing user: {email}")
             if not user.avatar_url and avatar_url:
                 user.avatar_url = avatar_url
             if not user.email_verified and email_verified:
@@ -430,13 +442,15 @@ async def google_callback_get(
         access_token = create_access_token({"sub": user.email, "user_id": user.id})
         refresh_token = create_refresh_token({"sub": user.email, "user_id": user.id})
         
-        # Redirect to frontend with token
-        return RedirectResponse(
-            url=f"{settings.FRONTEND_URL}/auth/callback?token={access_token}&provider=google"
-        )
+        final_url = f"{settings.FRONTEND_URL}/auth/callback?token={access_token}&provider=google"
+        print(f"✅ Redirecting to: {final_url[:100]}...")
+        
+        return RedirectResponse(url=final_url)
     
     except Exception as e:
-        print(f"❌ Google OAuth error: {e}")
+        print(f"❌ [GOOGLE CALLBACK] Error: {e}")
+        import traceback
+        traceback.print_exc()
         return RedirectResponse(
             url=f"{settings.FRONTEND_URL}/login?error=oauth_failed"
         )
@@ -554,8 +568,11 @@ async def github_login_redirect(
     """Get GitHub OAuth authorization URL"""
     
     try:
+        # ✅ USE BACKEND URL - MUST MATCH GitHub Settings EXACTLY
         if not redirect_uri:
             redirect_uri = "http://localhost:8000/api/auth/github/callback"
+        
+        print(f"🔗 [GITHUB LOGIN] Using redirect_uri: {redirect_uri}")
         
         state = secrets.token_urlsafe(32)
         auth_url = github_oauth.get_authorize_url(
@@ -589,30 +606,33 @@ async def github_callback_get(
     """Handle GitHub OAuth callback (called by GitHub via GET)"""
     
     try:
-        print(f"🔵 GitHub callback received with code: {code[:20]}...")
-        print("=" * 50)
-        print(f"🔵 GitHub callback received!")
+        print("=" * 60)
+        print(f"🔵 [GITHUB CALLBACK] Received!")
         print(f"📌 Code: {code[:20]}...")
-        print(f"📌 FRONTEND_URL: {settings.FRONTEND_URL}")
-        print("=" * 50)
+        print("=" * 60)
         
+        # ✅ MUST MATCH redirect_uri from /github/login
         user_info = await github_oauth.get_user_info(
             code=code,
-            redirect_uri=f"{settings.FRONTEND_URL}/auth/github/callback"
+            redirect_uri="http://localhost:8000/api/auth/github/callback"
         )
         
         email = user_info.get("email")
-        full_name = user_info.get("name", "")
+        full_name = user_info.get("name") or user_info.get("username") or ""
         avatar_url = user_info.get("picture")
         
         if not email:
+            print("❌ No email from GitHub")
             return RedirectResponse(
                 url=f"{settings.FRONTEND_URL}/login?error=email_not_provided"
             )
         
+        print(f"📌 Got email: {email}")
+        
         user = db.query(User).filter(User.email == email).first()
         
         if not user:
+            print(f"📌 Creating new user: {email}")
             user = User(
                 email=email,
                 password_hash=None,
@@ -625,17 +645,21 @@ async def github_callback_get(
             db.add(user)
             db.commit()
             db.refresh(user)
+        else:
+            print(f"📌 Found existing user: {email}")
         
         access_token = create_access_token({"sub": user.email, "user_id": user.id})
         refresh_token = create_refresh_token({"sub": user.email, "user_id": user.id})
         
-        # Redirect to frontend with token
-        return RedirectResponse(
-            url=f"{settings.FRONTEND_URL}/auth/callback?token={access_token}&provider=github"
-        )
+        final_url = f"{settings.FRONTEND_URL}/auth/callback?token={access_token}&provider=github"
+        print(f"✅ Redirecting to: {final_url[:100]}...")
+        
+        return RedirectResponse(url=final_url)
     
     except Exception as e:
-        print(f"❌ GitHub OAuth error: {e}")
+        print(f"❌ [GITHUB CALLBACK] Error: {e}")
+        import traceback
+        traceback.print_exc()
         return RedirectResponse(
             url=f"{settings.FRONTEND_URL}/login?error=oauth_failed"
         )
